@@ -1,0 +1,236 @@
+---
+title: "Simply Trini Cooking - a webscraping example with tidyverse"
+author: "Charles Lindberg"
+date: "April 10, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(rvest)
+Sys.setlocale("LC_ALL", "English") #This helps avoid a text conversion error when knitting: https://www.r-bloggers.com/web-scraping-and-invalid-multibyte-string/
+options(warn=-1) #Turn off pesky uninitialised column warnings
+```
+
+### Simply Trini Cooking
+
+My good friend Carly asked me about webscraping because I may have "bragged" about doing such a thing in the past.  It is true, that I have dabbled a little bit.  The case study was simple which made it brilliantly intriguing\-\- Carly loves trinidadian cooking (trini-cooking) and other near inspired flavors. I have become extremely fond of it myself!  She found a great website where this wonderful cook shares a large number of trini-cooking recipes that are simple!
+
+Carly uses the the Apple recipe (?) app which takes ingredients across multiple recipes as an input and then summarizes what she needs from the grocier. In other words, it tallies exactly what she needs for each trip to the grocery store and it keeps track of she has based on what recipes she wants to make.
+
+This is my attempt to share my web-scraping and data-wrangling story of simply-trini-cooking.  My goal is to present Carly with a tidy set of trini-cooking recipes.  We start by scraping the list of recipes off the site, examine some of the functionality of `rvest`, and end by scraping relevant data from each recipe page.
+
+### Gathering the List of Recipes
+
+The most difficult part of webscraping is finding what you're looking for within the page source code. In my experience, is it best to use the chrome browser, right click, and inspect the element. The first thing I did was browse the website https://www.simplytrinicooking.org/.  While I pulled up the main page Carly was looking at recipes and the following url caught my eye.
+
+```{r}
+# Website url string
+simplytrini_url <- 
+  "https://www.simplytrinicooking.org/category/recipes/page/"
+```
+
+After perusing the site a bit I realized there are 50 pages of recipes.  Within each page are multiple recipes (each page has 12 except the last at the time this was written). Use `tidyverse` to setup and organize the data extraction.
+
+```{r}
+# Create tibble with each recipe page.
+tbl_trini <-
+  data.frame(pages = 1:50) %>% #Need to automate this.
+  mutate(page_url = simplytrini_url %>% paste0(pages))
+```
+
+Earlier I mentioned the most difficult thing, in my opinion, is finding the right CSS selectors within the page source code. In my case I am after "body article a".  I found this selector by searching for key words in the webpage source code such as "parmesan".  I backtracked from there to find where the word parmesan is nested in the html node structure. 
+
+For example, let `(...)` represent other html code surrounding the ingredient parmesan but wrapped with CSS selectors.  Searching for parmesan put the cursor in the middle a large string.  I read the string backward (right to left) looking for CSS selectors along the way.  This is how I determined  "body article a" was a good starting point.  It cuts out a lot of the other noise on the page.
+
+<center>
+`<body><article><a> (...)"Parmesan"(...) </a></article></body>`
+</center>
+
+```{r}
+# Read the page html and select nodeset.
+tbl_trini <-
+  tbl_trini %>%
+  mutate(recipes_html       = page_url %>% map(read_html),
+         recipes_html_nodes = recipes_html %>% map(html_nodes, "body article a"))
+```
+
+There are other programmical ways to find this information, but I find this approach helps beginners understand how it works.
+
+### Examining the First Page of Recipes
+
+Let's take a look at the first node set.  I already know I am going to have more work to tidy the recipes.
+
+```{r}
+tbl_trini$recipes_html_nodes[[1]]
+```
+
+The nodeset has 24 items. Clearly, this needs to be by the image and title class.  Further notice the "href" is the same for both classes. At this point I am not going to use the `recipes_html_nodes`.  It is better to parse by class and separate image and title as two columns with 12 nodes.
+
+```{r}
+tbl_trini <-
+  tbl_trini %>%
+  mutate(recipe_title_html_nodes = recipes_html %>% map(html_nodes, "[class='entry-title-link']"),
+         recipe_image_html_nodes = recipes_html %>% map(html_nodes, "[class='entry-image-link']"))
+
+# View the first item.
+tbl_trini$recipe_title_html_nodes[[1]]
+tbl_trini$recipe_image_html_nodes[[1]]
+```
+
+Great! Now let's parse these nodesets further and add more information for Carly.  The images can be broken into further nodes with the CSS selector "noscript".  From there I noticed the image source can be called with the "src" attribute.  
+
+If you look at the structure you can see what's available.  Each code chunk below is an example of using different `revest` functions.  We'll do more of this later.
+
+```{r}
+# Inspecting the title node.
+tbl_trini$recipe_title_html_nodes[[1]] %>% html_attr("href")
+tbl_trini$recipe_title_html_nodes[[1]] %>% html_text()
+# Inspecting the image node.
+tbl_trini$recipe_image_html_nodes[[1]] %>% html_nodes("noscript")
+tbl_trini$recipe_image_html_nodes[[1]] %>% html_attr("href")
+tbl_trini$recipe_image_html_nodes[[1]] %>% html_text()
+tbl_trini$recipe_image_html_nodes[[1]] %>% html_nodes("noscript img") %>% html_attr("src")
+```
+
+The only things that appear useful from the pages are the recipe url, title, and the image source.  We add these to our tibble and while we are at it drop the xml document and all the nodesets\-\-\ we got everything we wanted.
+
+```{r}
+tbl_trini <-
+  tbl_trini %>%
+  mutate(recipe_url     = recipe_title_html_nodes %>% map(html_attr, "href"),
+         recipe_title   = recipe_title_html_nodes %>% map(html_text),
+         recipe_img     = recipe_image_html_nodes %>% map(html_nodes, "noscript img"),
+         recipe_img_src = recipe_img %>% map(html_attr, "src")
+         )
+
+# Get the class of the first element in each column, keep if it is not an xml_nodeset.
+index_get <- apply(tbl_trini, 2, function(x) x[[1]] %>% class) != "xml_nodeset"
+tbl_trini <- tbl_trini[index_get] %>% as_tibble() #Ptential work around to avoid unknown column warnings later.
+tbl_trini$recipes_html <- NULL
+```
+
+There is still more data to extract.  First, let's present all the recipes in one table with `unnest`.
+
+```{r}
+tryCatch(
+  tbl_trini %>% 
+  group_by(pages, page_url) %>% 
+  unnest
+  ,error = function(e) e
+)
+```
+
+Boo!  Guess what that means?  We are missing some data within the column lists.  Looking through the recipe list I found some of the image sources are missing.  This makes practicel sense (not every recipe has a photo), but we need to work around it.  My first thought was to remove the `recipe_img_src` column, unnest the tibble, and then join `recipe_img_src` back. But on second thought I have nothing to join back on.
+
+Drop the `recipe_img_src` column and just grab the image link off of each individual recipe page later.
+
+```{r}
+# Drop unwanted data.
+tbl_trini$recipe_img_src <- NULL
+# Try unnest again
+tbl_trini<- 
+  tbl_trini %>% 
+  group_by(pages, page_url) %>% 
+  unnest
+
+tbl_trini
+```
+
+### Scraping All Recipes
+
+Our table `tbl_trini` has each recipe as a row with a corresponding url.  Now we can run across each url and use `read_html` like we did before.  This is the longest part because we reading `r tbl_trini %>% nrow()` recipes!!  Unfortunately, I was getting an error when trying to run this code without the `tryCatch` function.  For whatever reason this seems to work; i.e. I don't get any NA results.
+
+```{r}
+tbl_trini <-   
+  tbl_trini %>% 
+  mutate(recipe_html = (recipe_url %>% map(read_html)) %>% tryCatch(error = function(e) NA()))
+```
+
+Earlier I mentioned there are ways to programmically look through the html rather than on a chrome browser for instance. Use `html_structure` to see the CSS selectors in addition to the website nesting structure. With the code up to this point, I can view the first recipe's page structure with the code `tbl_trini$recipe_html[1][[1]] %>% html_structure()`. It is long so I omit the output here.  
+
+I already know to look for "article" as before. Why? Because the website renders the same outer band of redundant information, but the inner body (which contains the recipe article) is the content that changes each time we visit a different recipe.  Check out the structure of recipe number 1.
+
+```{r}
+tbl_trini$recipe_html[1][[1]] %>% html_nodes("article") %>% html_structure()   
+```
+
+Scanning through this for a few minutes I already know exactly what Carly is looking for within the html.  Her app calls for the number of ingredients so if we pull the the selector "div.ERSIngredients" then we should have what we need.  Of course, we're not going to stop there.  The first section (the class attribute) has some great metadata: the articles have been tagged bythe author I presume.  In any case, we want the tags, and while we're at it the recipe directions and other data.
+
+```{r}
+# Function to shorten the code a little.
+node_text <- function(x, node){html_nodes(x, node) %>% html_text()}
+
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(tags         = recipe_html %>% map(function(x) html_nodes(x, "article") %>% html_attr("class")),
+         times        = recipe_html %>% map(node_text, "div.ERSTimes"),
+         items        = recipe_html %>% map(node_text, "div.divERSHeadItems"),
+         ingredients  = recipe_html %>% map(node_text, "div.ERSIngredients"),
+         instructions = recipe_html %>% map(node_text, "div.ERSInstructions"),
+         notes        = recipe_html %>% map(node_text, "div.ERSNotesDiv")
+         )
+
+# View the first element of each node's text.
+tbl_trini$tags[[1]]
+tbl_trini$times[[1]]
+tbl_trini$items[[1]]
+tbl_trini$ingredients[[1]]
+tbl_trini$instructions[[1]]
+tbl_trini$notes[[1]]
+```
+
+This data looks pretty good; the recipe is clearly all there.  We can do better wrangling than that though.  Taking a look back at the structure again\-\- we can call the items individually using the respective CSS selector.  Just to be sure I grab the right data, I first "subset" on the divider selector "div.", and then search for the selector I am after.  In other words, grab the larger node and then grab the nodes within; the function `node_node` does this.  This method reduces the chance of selecting unwanted data from a different part of the recipe page.
+
+```{r}
+# Another function to shorten the code a little.
+node_node <- function(x, node_parent, node_child){html_nodes(x, node_parent) %>% html_nodes(node_child)}
+
+# Add more customized selection criteria.
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    tags         = recipe_html %>% map(function(x) html_nodes(x, "article") %>% html_attr("class")),
+    times        = recipe_html %>% map(node_node, "div.ERSTimes",        "time"),
+    items        = recipe_html %>% map(node_node, "div.divERSHeadItems", "span"),
+    ingredients  = recipe_html %>% map(node_node, "div.ERSIngredients",  "li.ingredient"),
+    instructions = recipe_html %>% map(node_node, "div.ERSInstructions", "li.instruction"),
+    notes        = recipe_html %>% map(node_text, "div.ERSNotesDiv")
+         )
+
+# View the first element again.
+tbl_trini$tags[[1]]
+tbl_trini$times[[1]]
+tbl_trini$items[[1]]
+tbl_trini$ingredients[[1]]
+tbl_trini$instructions[[1]]
+tbl_trini$notes[[1]]
+```
+
+Looks fantastic! There is only one more thing I want from each page... the image links!  Since the grain of the tibble is by recipe we can use the code from earlier to search for the image selector.  Any missing image link should show up as `character(0)` which is completely fine.
+
+```{r}
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(img_link = recipe_html %>% 
+           map(function(x) html_nodes(x, "noscript img[itemprop='image']") %>% 
+                           html_attr("src")))
+# View the first link.
+tbl_trini$img_link[[1]] 
+# An example of the missing link... er I mean a missing link.
+tbl_trini$img_link[[37]] 
+```
+
+One final note quickly. I really love the example here: if I use the string `"noscript img [itemprop='image']"` for my selector then nothing would return.  Remove the space between `img` and the bracket `[` such as `"noscript img[itemprop='image']"` and it works.  I am pointing that out because I didn't know.
+
+### What's Next?
+
+Now it's time to share this example with Carly and further refine it with her feedback.  
+
+After that, we can do some visualizations, maybe some representation learning to start categorizing, or simply use the data set to query recipes in different ways.
+
+
+
+
+
