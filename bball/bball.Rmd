@@ -1,0 +1,563 @@
+---
+title: "Basketball Data"
+author: "Charles Lindberg"
+date: "April 13, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("tidyverse")
+library("xml2")
+library("rvest")
+path_save1 <- "tbl_players_1.Rda"
+path_save2 <- "tbl_players_2.Rda"
+path_save3 <- "tbl_players_3.Rda"
+path_save4 <- "tbl_players_4.Rda"
+```
+
+Sitting at a bar enjoying a Dogfish 60 Minute and a good friend of mine asked me about scraping data from a website.  James wants NBA player data so he can better predict which players will do better in his fantasy league.  Good luck with that!  I can help with the scraping, not fantasy basketball.
+
+### Scraping the List of Players
+
+The first thing we need to do is determine the list of players and the respective urls.  We are after each players' page where his stats reside (yes, boys only- this is the NBA).
+
+```{r alphabetical_players}
+urlref <- 
+  "https://www.basketball-reference.com/players/" #James gave this url to me.
+urlref %>% 
+  read_html %>% 
+  html_nodes("ul[class='page_index'] a")
+```
+
+There are a few ways to do this.  Instead of trying to get the alphabet links from the site I am just going to cheat and use the `letters` object.
+
+```{r alphabetical_players}
+# Setup tibble with alphabet.
+tbl_players <-
+  as.data.frame(letters) %>% 
+  mutate(url_letter = urlref %>% paste0(letters,"/"))
+```
+
+Let's look at the first page of players, page "A", to get a feel for the content.  I know there is a table so let's grab the "tbody" and break it out by table row "tr".
+
+```{r first_page_of_players}
+tbl_players$url_letter[1] %>% 
+  read_html %>% 
+  html_nodes("tbody tr")
+```
+
+That was perfect.  The number of nodes matches the number of players listed on page "A".  Let's grab all the tables on each alphabetical page.
+
+```{r}
+# There are no players with a last name starting with "x", so no url exists at the time this was written.
+tbl_players <- 
+  tbl_players %>% 
+  subset(letters != "x") %>% 
+  mutate(tbody = url_letter %>% map(function(x) read_html(x) %>% html_nodes("tbody tr")))
+```
+
+Grab all the 'data-stats' out of the table of players including the url for each player page.  We could use `html_table` as well (I will later), but I wanted to demonstrate a manual approach.
+
+```{r player_tibble}
+# Function to help reduce code below.
+node_text <- 
+  function(x, css){html_nodes(x, css) %>% html_text}
+
+tbl_players <-
+  tbl_players %>% 
+  mutate(
+    player_url = tbody %>% map(function(x) html_nodes(x, "th[data-stat='player'] a") %>% html_attr("href")), 
+    player     = tbody %>% map(node_text, "th"),
+    year_min   = tbody %>% map(node_text, "td[data-stat='year_min']"),
+    year_max   = tbody %>% map(node_text, "td[data-stat='year_max']"),
+    pos        = tbody %>% map(node_text, "td[data-stat='pos']"),
+    height     = tbody %>% map(node_text, "td[data-stat='height']"),
+    weight     = tbody %>% map(node_text, "td[data-stat='weight']"),
+    birth_date = tbody %>% map(node_text, "td[data-stat='birth_date']"),
+    colleges   = tbody %>% map(node_text, "td[data-stat='colleges']"),
+    all_star   = player%>% map(str_detect, "\\*")
+  )
+
+# Active players are bold which is identified with '<strong>'.
+tbl_players_active <-
+  tbl_players %>% 
+  transmute(active = tbody %>% map(function(x) html_nodes(x, "strong") %>% html_text)) %>% 
+  unnest %>% mutate(active_key = 1:nrow(.))
+
+# Remove page-table, unnest, and add active players back on. 
+tbl_players <- 
+  tbl_players %>% 
+    select(-tbody) %>% 
+    unnest() %>% 
+  mutate(player_url = 
+           url_letter %>% 
+           str_remove("/players/./") %>%
+           paste0(player_url)) %>% 
+  left_join(tbl_players_active, by = c("player" = "active"))
+
+# Not needed anymore.
+rm(tbl_players_active)
+```
+
+### Scraping Each Player's Page in Parallel - Unsuccessfully
+
+Last thing to do is grab all the table stats from each player's page. First, we read in all the html like before but there are more than 26 pages to read.  This is going to take a long time because there are `r tbl_players %>% nrow` players to lookup.  Let's see how long it takes to do 100.  I am hard-wired into my 5G home network.
+
+```{r read_100_players}
+x <- Sys.time()
+try_not_par <-
+  tbl_players[1:100,] %>% 
+    mutate(html = player_url %>% map(read_html))
+Sys.time() - x
+```
+
+About 40 seconds per 100 players is as fast as I could get.  Let's try to get that faster though shall we? [Max Gordon](https://www.r-bloggers.com/author/max-gordon/) has some great stuff, in particular [this blog post from 2015](https://www.r-bloggers.com/how-to-go-parallel-in-r-basics-tips/).  I opted to use the `parallel` package.
+
+```{r cluster, echo=FALSE}
+library(parallel)
+# Calculate the number of cores
+no_cores <- detectCores() - 1
+# Initiate cluster
+cl <- makeCluster(no_cores)
+# Setup libraries on cluster.
+clusterEvalQ(cl, 
+             list(library(tidyverse), 
+                  library(xml2), 
+                  library(rvest))) %>% invisible()
+```
+
+```{r parLapply}
+x <- Sys.time()
+try_par <- 
+  parLapply(cl, tbl_players$player_url[1:100], xml2::read_html)
+Sys.time() - x
+```
+
+Nice! Eso fue mucho m\’{a}s r\’{a}pido. That was literally `r no_cores` faster.  Don't get too excited; there is a problem with our data.  Check out the parallel pull versus the non-parallel pull.
+
+```{r}
+#We have html data here.
+try_not_par$html[[1]]
+#We do not have html data here... just an empty xml_document.
+try_par[[1]]
+```
+
+This is a pretty rookie mistake when using `parallel` package. I need to export the environmental variables to each CPU. 
+
+```{r cluster, echo=FALSE}
+# Export the object.
+clusterExport(cl, list=ls())
+
+x <- Sys.time()
+try_par <-
+  parLapply(cl, tbl_players_safe$player_url, function(x) read_html(x))
+Sys.time() - x
+
+try_par[[1]]
+rm(tbl_df, try_not_par, try_par)
+```
+
+Still get nothing. I'll have to come back to this.  I've tried it several different ways and continue to get external pointers-- which is bad.  The `foreach` package may be looking into instead.  [Gordan's post](https://www.r-bloggers.com/how-to-go-parallel-in-r-basics-tips/) goes into this alternative.
+
+### Successfully Scraping Each Player's Page
+
+Let's go back to using one core and let the machine run longer.  Should be less than an hour for the number of players currently in the database.
+
+```{r eval=FALSE}
+# tbl_players_safe <-
+#   tbl_players[1:100,] %>% 
+#   mutate(html = player_url %>% map(read_html))
+tbl_players <-
+  tbl_players %>% 
+  mutate(html = player_url %>% map(read_html))
+# Using save because write_rds drops information in the hmtl for some reason.
+tbl_players %>% save(file = path_save1)
+```
+
+We're not done yet-- not even close.  There are lots of tables to parse within each players page.  Moreover, each player has game logs and splits recorded by season as well (two other pages).  Sounds as rich as a fried piece of maple-candied bacon.
+
+At this point I'm thinking about the horrendous unnesting we'll have to do with all this data, but we'll handle that later. We need a function to organize html tables into a tibble and then add stats for each player. Rather than explicitly getting the table elements with the element selectors like we did before we can use `html_table`.
+
+Two players were added yesterday or today. Lol.
+
+```{r player_html_table}
+load(path_save1)
+
+tbl_players$html[[1]] %>% 
+  html_nodes("table") %>% 
+  html_table() 
+```
+
+Unfortunately, this only produces the first table on the page.  I could go back to the page source data and record all the table ids manually, but that not as dynamic. There is a way to get all the tables I found on a [stackoverflow post](https://stackoverflow.com/questions/43476819/not-able-to-scrape-a-second-table-within-a-page-using-rvest). [Carl Boneri's](https://stackoverflow.com/users/5133721/carl-boneri) suggested this solution-- it works surprisingly well.  I modified it a little bit.  The only downside is not getting the name of the tables (the header).
+
+```{r get_player_tables}
+get_player_tables <- function(x){
+  # First table is in the markup.
+  table_one <- 
+    xml_find_all(x, "//table") %>% html_table
+  # Additional tables are within the comment tags, ie <!-- tables -->
+  # Which is why your xpath is missing them. First get the commented nodes.
+  alt_tables <- xml2::xml_find_all(x, "//comment()") %>% {
+    # Find only commented nodes th at contain the regex for html table markup
+    raw_parts <- as.character(.[grep("\\</?table", as.character(.))])
+    # Remove the comment begin and end tags
+    strip_html <- 
+      raw_parts %>% 
+      stringi::stri_replace_all_regex(c("<\\!--","-->"), c("", ""), vectorize_all = FALSE)
+    # Loop through the pieces that have tables within markup and apply the same functions
+    grep("<table", strip_html, value = TRUE) %>% 
+    lapply(function(i){
+      read_html(i) %>%
+      xml_find_all("//table") %>% 
+      html_table %>% .[[1]]})
+  }
+  # Put all the dataframes into a list.
+  all_tables <- c(
+    table_one, alt_tables
+  )
+  return(all_tables)
+}
+
+# Test out the function.
+player_no_tables <-
+  tbl_players$html[[1]] %>% 
+  get_player_tables %>% 
+  length
+
+```
+
+The first player in the list has `r player_no_tables` tables on his page.  Code for every player is as follows.
+
+```{r player_tables, eval = FALSE}
+tbl_players <-
+  tbl_players %>% 
+  mutate(player_tables = html %>% map(get_player_tables))
+tbl_players %>% save(file = path_save2)
+```
+
+#### Naming Each Table with its html Header
+
+Let's provide a solution for the table names.  Let's assume all players have the same number of tables.  We get the following list of headers for our first player, `r tbl_players$player[1]`.
+
+```{r table_headers1}
+load(path_save2)
+table_headers <-
+  tbl_players$html[[1]] %>% 
+  html_nodes("h2") %>% 
+  html_text
+table_headers
+```
+
+Unfortunately, "`r table_headers[2]`" is getting in the way.  I'm going to remove this manually for now just to focus on table data.  I am going to assume "player news" is not a table and does not contain great information. So we name every table across all players as follows.
+
+```{r table_headers2}
+table_headers <- 
+  table_headers[table_headers != "Player News"][1:player_no_tables]
+
+tryCatch(
+tbl_players$player_tables %>% 
+  map(function(x) names(x) <- table_headers),
+error = function(e) e
+)
+```
+
+Of course we get an error!  It appears there is at least one player page where the number of tables is less than `r player_no_tables`. Now we got to find that player and take care of it.  Let's plot the number of tables per player to see if this problem is isolated.
+
+```{r}
+tbl_players <-
+  tbl_players %>% 
+  mutate(no_tables = player_tables %>% sapply(length))
+
+tbl_players %>% 
+ggplot(aes(x = no_tables)) +
+  geom_bar() + 
+  xlab("Number of Tables on Player Page") +
+  ylab("Frequency of Players")
+```
+
+0_o
+
+Assuming the number of tables per player was the same was an extremely bad assumption apparently.  I suppose the real assumption was the code works consistently across all players. After checking a few pages, it is definitely not the code.  Now it is time to rememedy this problem.
+
+#### Number of Tables Per Page Vary
+
+More programming is required which means more creativity is needed.  
+
+I'm going to use the `xpath` argument with a pipe (|) and get all the table ids for each player.  We pass the vector of ids to a function to get all the player's *overview* data in a fairly clean way.  The following is an example of the ids for the 99th player.
+
+```{r html_attr_id_success}
+xpath <- "//div[@class='table_wrapper']|//div[@class='table_wrapper setup_commented commented']"
+
+tbl_players$html[[99]] %>% 
+html_nodes(xpath = xpath) %>% 
+html_attr("id")
+```
+
+Now we can call each table explicitly with the id. Mucho mas facil. Using the same pipe approach.  I'm sure there is a way to continue to use `css` instead `xpath`- I just don't know how. Below we simply collapse the xpath selectors with pipes and 
+
+```{r player_table_ids, eval = FALSE}
+tbl_players <- 
+  tbl_players %>% 
+  mutate(player_table_ids   = html %>% map(function(x) html_attr(html_nodes(x, xpath = xpath), "id")),
+         player_table_xpath = player_table_ids %>% map(function(x) paste0("//div[@id='", x, "']", collapse = "|")),
+         player_tables      = map2(html, player_table_xpath, function(x,y) html_nodes(x, xpath = y)))
+tbl_players %>% save(file = path_save3)
+```
+
+## Additional Data to Scrape
+
+There is more data of interest beyond each players page.  Earlier I mentioned game logs and splits- we want those urls plus some others.  At this point I'm going to drop the `html` column.  There is little left to scrap from here.  
+
+```{r loading_save3, include = FALSE}
+load(path_save3)
+```
+
+```{r player_more_pages}
+url_strings <- c("/gamelog/","/splits/", "/shooting/", "/lineups/", "/on-off/")
+
+tbl_players <- 
+  tbl_players %>% 
+  mutate(player_meta  = html %>% map(html_nodes, "[id='meta']"),
+         transactions = html %>% map(html_nodes, "[id='all_transactions']"),
+         more_urls    = html %>% map(html_nodes, "[id='bottom_nav'] li a") %>% 
+                                 map(html_attr,  "href") %>% 
+                                 map(function(x) url_strings %>% map(function(y) x[x %>% str_detect(y)]) %>% unlist(FALSE))
+         ) %>% 
+  select(-html)
+tbl_players %>% save(file = path_save4)
+```
+
+Let's do a quick summary of what we got so far.  After we tidy the data we'll do more interesting summarization in section \@ref[visualize]. According to the data we've scraped as of `r Sys.date()`:
+
+* There are `r tbl_players$player %>% rnow` players of which `r tbl_players$active_key %>% sapply(function(x) !is.na(x)) %>% sum` are active.
+* `r tbl_players$all_star %>% sum` players are all-stars.
+* We have gathered `r tbl_players$player_table_ids %>% sapply(length) %>% sum` tables.  More tables to come.
+* Total number of urls left to scrape: `r tbl_players$more_urls %>% sapply(length) %>% sum`.
+    - The number of urls for active and inactive players is `r tbl_players$more_urls[tbl_players$active %>% sapply(function(x) !is.na(x))] %>% sapply(length) %>% sum` and 'r tbl_players$more_urls %>% sapply(length) %>% sum - tbl_players$more_urls[tbl_players$active %>% sapply(function(x) !is.na(x))] %>% sapply(length) %>% sum`, respectively.
+    - Our benchmark of 100 pages per 40 seconds yields `r tbl_players$more_urls %>% sapply(length) %>% sum /100 * 40/60/60` total hours; for active players this time estimated to be `r tbl_players$more_urls[tbl_players$active %>% sapply(function(x) !is.na(x))] %>% sapply(length) %>% sum /100 * 40 /60/60` hours to get all the tables.
+
+Our current estimate of runtime is not terrible, but it is not ideal at all.  At this point, I can think of three options: (1) revisit parallel processing, (2) partitiona the data and pass each into a remote machine or run multiple R sessions (the manual way of (1)), or (3) split the data pull into current and prior seasons and only update current season for each player.  
+
+You saw my attempt at option (1).  It's still the best.
+
+Option (2) is a pain but it is the quickest solution.  This is done by partitioning our players into `r no_cores` groups and running a bash loop through the terminal.  In any case, the OS would manage the CPUs - which is nice- and the output would also be partitioned. The partitioned output would then be comnined with `rbind_all`.  
+
+Option (3) is a last resort, but appealing because it is quick (after all historical seasons are collected the first time). The current season would cut the number of pages to scrape down to the number of active players.  The issue with (3) is additional special case programming-- I'd rather apply the same function across all players-- hence a last resort.
+
+You can read more about these and others options found here: https://stackoverflow.com/questions/31137842/run-multiple-r-scripts-simultaneously.
+
+### Scraping Thousands of Pages in Parallel - Successfully!
+
+Just because things are frustrating the first time, and the second, and hours go by, doesn't mean it won't work out.  Option (1) is the best solution.  
+
+This time we try the `foreach` package. Let's automatically partition our dataset, `x`, and "for each"" partition apply the same function `f`.  
+
+```{r}
+foreach_core <- 
+  function(x, f, no_cores){  
+    require(foreach)
+    if(Sys.info()["sysname"] == "Windows"){
+      library(doParallel)
+      cl <- makeCluster(no_cores)
+      registerDoParallel(cl)
+    }else{
+      library(doMC)
+      registerDoMC(no_cores)
+    }
+    x_split <- split(x, 
+                     rep(1:ceiling(nrow(x)/no_cores), 
+                         each = no_cores, 
+                         length.out = nrow(x)))
+    f_output <-
+      foreach(x = x_split) %dopar% {f(x)}
+    return(f_output)
+    if(Sys.info()["sysname"] == "Windows") stopCluster(cl)
+  }
+
+try_par <-
+  foreach_core(tbl_players_safe, 
+               #You can add the libraries to each core as part of the function.  Here we use ::.
+               function(x) dplyr::mutate(x, html = purrr::map(player_url, xml2::read_html)), 
+               no_cores) %>% 
+  bind_rows
+
+try_par$html[[1]]
+```
+
+Noooooo!! We have the same problem as before. Do we seriously need to consider the other options? But wait, isn't this section called "Scraping Thousands of Pages in Parallel - Successfully!"? 
+
+To answer those questions you have to ask yourself what a gorilla and a cookie have in common. It's because girl scouts and glue don't mix, but suddenly you find yourself sitting there wondering "what if?". What if we pass the output of `read_html` to another function as part of the parallel process?  Let's try it.
+
+```{r}
+try_par <-
+  foreach_core(
+    tbl_players_safe, 
+    #You can add the libraries to each core as part of the function as so.
+    function(x) {
+      library(tidyverse)
+      library(xml2)
+      library(rvest)
+      xpath <- "//div[@class='table_wrapper']|//div[@class='table_wrapper setup_commented commented']"
+      mutate(x, html = map(player_url, read_html), 
+                player_table_ids = 
+                  map(html, function(x) 
+                    html_attr(html_nodes(x, xpath = xpath), "id"))
+             )
+      },
+    no_cores) %>% 
+  bind_rows
+
+try_par$html[[1]]
+try_par$player_table_ids[[1]]
+```
+
+YES!!  The `html` object does not return anything, as expected, but the `player_table_ids` worked perfectly.  Somehow information is lost when passed from environments.  My hypothesis is this is the same issue as needing to use `save` rather than `write_rds` to preserve the `html` object within `tbl_players`.  A little research with `?read_html` makes sense; it is the same issue: "Urls will be converted into connections either using base::url or, if installed, curl::curl".  The connections are not preserved. but we don't need them.
+
+I've shown you can use `read_html` in addition to `rvest` functions to scrape websites in parallel.  At this point, we gather all the functions we've written and apply them in parallel.
+
+## Scrapula City
+
+I came here to [scrape the website and chew bubble gum, but I am all out of gum](https://www.youtube.com/watch?v=2XbCWmY0eqY). This section marks the end of our scraping journey.  Follow the code verbs below.  We begin where we started and finish the scraping with the following code.
+
+```{r}
+library(tidyverse)
+library(xml2)
+library(rvest)
+
+urlref <- 
+  "https://www.basketball-reference.com/players/"
+
+node_text <- 
+  function(x, css){html_nodes(x, css) %>% html_text}
+
+tbl_players <-
+  as.data.frame(letters) %>% 
+  subset(letters != "x") %>% 
+  mutate(
+    alpha      = urlref %>% paste0(letters,"/"),
+    tbody      = alpha %>% map(function(x) read_html(x) %>% html_nodes("tbody tr")),
+    player_url = tbody %>% map(function(x) html_nodes(x, "th[data-stat='player'] a") %>% html_attr("href")), 
+    player     = tbody %>% map(node_text, "th"),
+    year_min   = tbody %>% map(node_text, "td[data-stat='year_min']"),
+    year_max   = tbody %>% map(node_text, "td[data-stat='year_max']"),
+    pos        = tbody %>% map(node_text, "td[data-stat='pos']"),
+    height     = tbody %>% map(node_text, "td[data-stat='height']"),
+    weight     = tbody %>% map(node_text, "td[data-stat='weight']"),
+    birth_date = tbody %>% map(node_text, "td[data-stat='birth_date']"),
+    colleges   = tbody %>% map(node_text, "td[data-stat='colleges']"),
+    all_star   = player%>% map(str_detect, "\\*")
+  )
+
+tbl_players_active <-
+  tbl_players %>% 
+  transmute(active = tbody %>% map(function(x) html_nodes(x, "strong") %>% html_text)) %>% 
+  unnest %>% 
+  mutate(active_key = 1:nrow(.))
+
+tbl_players <- 
+  tbl_players %>% 
+    select(-tbody) %>% 
+    unnest() %>% 
+  mutate(player_url = 
+           alpha %>% 
+           str_remove("/players/./") %>%
+           paste0(player_url)) %>% 
+  left_join(tbl_players_active, by = c("player" = "active"))
+
+rm(tbl_players_active)
+
+scrapula_city <- function(tbl_players){
+  
+  library(tidyverse)
+  library(xml2)
+  library(rvest)
+
+  xpath       <- "//div[@class='table_wrapper']|//div[@class='table_wrapper setup_commented commented']"
+  url_strings <- c("/gamelog/","/splits/", "/shooting/", "/lineups/", "/on-off/")
+  
+  tbl_players <-
+    tbl_players %>% 
+    mutate(
+      html                = player_url %>% map(read_html),
+      player_meta         = html %>% map(html_nodes, "[id='meta']"),
+      player_transactions = html %>% map(html_nodes, "[id='all_transactions']"),
+      player_table_ids    = html %>% map(function(x) html_attr(html_nodes(x, xpath = xpath), "id")),
+      more_urls           = html %>% map(html_nodes, "[id='bottom_nav'] li a") %>% 
+                                     map(html_attr,  "href") %>% 
+                                     map(function(x) url_strings %>% map(function(y) x[x %>% str_detect(y)]) %>% unlist(FALSE)),
+      player_table_xpath  = player_table_ids %>% map(function(x) paste0("//div[@id='", x, "']", collapse = "|")),
+      player_tables       = map2(html, player_table_xpath, function(x, y) html_nodes(x, xpath = y))
+    ) %>% 
+    select(-html)
+
+  tbl_player_dat <-
+    tbl_players %>% 
+    select(alpha, player, player_url, more_urls) %>% 
+    unnest(more_urls) %>% 
+    mutate(
+      more_urls   = alpha     %>% map2(more_urls, function(x, y) str_remove(x, "/players/./") %>% paste0(y)),
+      html        = more_urls %>% map(read_html), 
+      table_ids   = html      %>% map(function(x) html_attr(html_nodes(x, xpath = xpath), "id")),
+      table_xpath = table_ids %>% map(function(x) paste0("//div[@id='", x, "']")),
+      tables      = map2(html, table_xpath, 
+                         function(x, y) y %>% 
+                           map(function(z) html_nodes(x, xpath = z)) %>% 
+                           map(function(z) html_nodes(z, "table") %>% html_table(fill = TRUE)))
+    )
+  
+  return(list(overview = tbl_players, data = tbl_player_dat))
+}
+
+x <- Sys.time()
+try_par <-
+  foreach_core(
+    tbl_players, 
+    scrapula_city,
+    no_cores) 
+Sys.time() - x
+
+tbl_players      
+```
+
+
+## Tidy the Tables
+
+Need to fix the headers.
+
+## Tidy All the Data
+
+Model ready tidy data.
+
+## Visualise
+
+
+```{r visualize1}
+
+tbl_players %>% 
+  ggplot(mapping = 
+           aes(x = weight %>% as.numeric(), 
+               y = height %>% {substr(., 1,1) %>% as.numeric * 12 + 
+                   str_extract(., "(?<=[:punct:])[:digit:]+") %>% as.numeric})) + 
+  geom_hex() +
+  geom_smooth(color = "darkorange3") + 
+  # geom_point() +
+  
+  xlab("Weight in lbs") + 
+  ylab("Height in inches")
+```
+
+## Using tensorflow to Predict Basketball
+
+Add some simple examples of predicting player success with some outcome y or multiple outcomes $y_i$.
+
+
+
+
+
+
+
+
+
+
+
