@@ -1,21 +1,33 @@
 ---
-title: "Simply Trini Cooking - a webscraping example with tidyverse"
+title: "Simply Trini Cooking - a webscraping example with rvest and tidyverse"
 author: "Charles Lindberg"
-date: "April 10, 2019"
-output: html_document
+date: "2019-10-23"
+tags:
+- rvest
+- xml2
+- tidyverse
+- food
+- trinidad
+- css selectors
+- html
+- wordcloud
+output:
+  blogdown::html_page:
+    toc: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(rvest)
+library(xml2)
 Sys.setlocale("LC_ALL", "English") #This helps avoid a text conversion error when knitting: https://www.r-bloggers.com/web-scraping-and-invalid-multibyte-string/
 options(warn=-1) #Turn off pesky uninitialised column warnings
 ```
 
 ### Simply Trini Cooking
 
-My good friend Carly asked me about webscraping because I may have "bragged" about doing such a thing in the past.  It is true, that I have dabbled a little bit.  The case study was simple which made it brilliantly intriguing\-\- Carly loves trinidadian cooking (trini-cooking) and other near inspired flavors. I have become extremely fond of it myself!  She found a great website where this wonderful cook shares a large number of trini-cooking recipes that are simple!
+My good friend Carly asked me about webscraping because I may have "bragged" about doing such a thing in the past.  It is true, that I have dabbled a little bit.  The case study was simple which made it brilliantly intriguing--- Carly loves trinidadian cooking (trini-cooking) and other near inspired flavors. I have become extremely fond of it myself!  She found a great website where this wonderful cook shares a large number of trini-cooking recipes that are simple!
 
 Carly uses the the Apple recipe (?) app which takes ingredients across multiple recipes as an input and then summarizes what she needs from the grocier. In other words, it tallies exactly what she needs for each trip to the grocery store and it keeps track of she has based on what recipes she wants to make.
 
@@ -47,6 +59,7 @@ For example, let `(...)` represent other html code surrounding the ingredient pa
 <center>
 `<body><article><a> (...)"Parmesan"(...) </a></article></body>`
 </center>
+<br>
 
 ```{r}
 # Read the page html and select nodeset.
@@ -81,7 +94,7 @@ tbl_trini$recipe_image_html_nodes[[1]]
 
 Great! Now let's parse these nodesets further and add more information for Carly.  The images can be broken into further nodes with the CSS selector "noscript".  From there I noticed the image source can be called with the "src" attribute.  
 
-If you look at the structure you can see what's available.  Each code chunk below is an example of using different `revest` functions.  We'll do more of this later.
+If you look at the structure you can see what's available.  Each code chunk below is an example of using different `rvest` functions.  We'll do more of this later.
 
 ```{r}
 # Inspecting the title node.
@@ -103,12 +116,12 @@ tbl_trini <-
          recipe_title   = recipe_title_html_nodes %>% map(html_text),
          recipe_img     = recipe_image_html_nodes %>% map(html_nodes, "noscript img"),
          recipe_img_src = recipe_img %>% map(html_attr, "src")
-         )
+         ) %>% 
+  select(-recipes_html)
 
 # Get the class of the first element in each column, keep if it is not an xml_nodeset.
 index_get <- apply(tbl_trini, 2, function(x) x[[1]] %>% class) != "xml_nodeset"
-tbl_trini <- tbl_trini[index_get] %>% as_tibble() #Ptential work around to avoid unknown column warnings later.
-tbl_trini$recipes_html <- NULL
+tbl_trini <- tbl_trini[index_get]
 ```
 
 There is still more data to extract.  First, let's present all the recipes in one table with `unnest`.
@@ -143,9 +156,12 @@ tbl_trini
 Our table `tbl_trini` has each recipe as a row with a corresponding url.  Now we can run across each url and use `read_html` like we did before.  This is the longest part because we reading `r tbl_trini %>% nrow()` recipes!!  Unfortunately, I was getting an error when trying to run this code without the `tryCatch` function.  For whatever reason this seems to work; i.e. I don't get any NA results.
 
 ```{r}
+x <- Sys.time()
 tbl_trini <-   
   tbl_trini %>% 
   mutate(recipe_html = (recipe_url %>% map(read_html)) %>% tryCatch(error = function(e) NA()))
+Sys.time() - x
+tbl_trini_copy <- tbl_trini  # Since this step takes so long we create a copy in case we mess up tbl_trini.
 ```
 
 Earlier I mentioned there are ways to programmically look through the html rather than on a chrome browser for instance. Use `html_structure` to see the CSS selectors in addition to the website nesting structure. With the code up to this point, I can view the first recipe's page structure with the code `tbl_trini$recipe_html[1][[1]] %>% html_structure()`. It is long so I omit the output here.  
@@ -196,7 +212,7 @@ tbl_trini <-
     items        = recipe_html %>% map(node_node, "div.divERSHeadItems", "span"),
     ingredients  = recipe_html %>% map(node_node, "div.ERSIngredients",  "li.ingredient"),
     instructions = recipe_html %>% map(node_node, "div.ERSInstructions", "li.instruction"),
-    notes        = recipe_html %>% map(node_text, "div.ERSNotesDiv")
+    notes        = recipe_html %>% map(html_node, "div.ERSNotesDiv")
          )
 
 # View the first element again.
@@ -220,17 +236,667 @@ tbl_trini <-
 tbl_trini$img_link[[1]] 
 # An example of the missing link... er I mean a missing link.
 tbl_trini$img_link[[37]] 
+# List of ingredients.
+tbl_trini$ingredients[[1]]
+# List of the times.
+tbl_trini$times[[1]]
 ```
 
 One final note quickly. I really love the example here: if I use the string `"noscript img [itemprop='image']"` for my selector then nothing would return.  Remove the space between `img` and the bracket `[` such as `"noscript img[itemprop='image']"` and it works.  I am pointing that out because I didn't know.
 
+### Tidy the Data
+
+Now we have to go through each nested column and tidy it up.  Our object `tbl_trini` will be transformed further getting us closer to a tidy end product.
+
+#### Tidy the tags
+
+We use the regex "tag.+" to extract all characters after "tag".  Take a look at the first set of tags.
+
+```{r tags_beginning_is_ugly}
+tbl_trini$tags[[1]]
+```
+
+Next we want to split the tags into a character vector.  An example of the output for the first 3 recipes is as follows.
+
+```{r tidy_tags_example}
+tbl_trini$tags[1:3] %>% map(str_extract, "tag.+") %>% str_split("[ ]")
+```
+
+Based on this output, however, it looks like we want to do more than just split the tags.  
+
+If you are thinking there may be redundant information here and that may be true.  Afterall, we scrapped the ingredients already but in a different way from a different place.  There are two differences: the `tags` are meta-data, and the `ingredients` include the quantity of said ingredient.  We are here to tidy first and then we may be able to make some comparisons to other data we have.
+
+Another observation--- you can see the tags classify the recipe type, skill level, course, and cuisine.  This information seems useful so we tidy these features as separate columns. There are several ways to do this but I am going to directly extract with the regular expressions.  Before we used "tag.+", but this time we are after specific information between two strings.  Going between the sting "b" and "c" is done using the regex "(?<=b)a(?=c)" where "a" is our target string, "b" proceeds "a", and "a" proceeds "c".
+
+```{r tidy_tags}
+tbl_trini_ <- 
+  tbl_trini %>% 
+    mutate(
+      tag_recipe_type = tags %>% map(str_extract, "(?<=recipe_type-)[:graph:]*(?=[:blank:])"),
+      tag_skill_level = tags %>% map(str_extract, "(?<=skill_level-)[:graph:]*(?=[:blank:])"),
+      tag_course      = tags %>% map(str_extract, "(?<=course-)[:graph:]*(?=[:blank:])"),
+      tag_cuisine     = tags %>% map(str_extract, "(?<=cuisine-)[:graph:]*(?=[:blank:])")
+      ) %>% 
+    unnest(tag_recipe_type, tag_skill_level, tag_course, tag_cuisine)
+```
+
+Did you notice a problem when you ran this code?  I changed the name to `tbl_trini_` instead of `tbl_trini`. That's not the problem, but notice the number of rows increased.
+
+```{r a_subtle_change}
+tbl_trini  %>% nrow
+tbl_trini_ %>% nrow
+```
+
+With inspection I found some recipes where `tags`'s length is greater than one.  This means the map through `html_nodes` earlier must have found multiple tag items with the CSS selector somehow.  We can graph how often it happens as follows.
+
+```{r}
+tbl_trini %>% 
+  ggplot(aes(x = tags %>% sapply(length))) + 
+  geom_bar() + xlab("Number of Multi-tags")
+```
+
+This is one of those times where you ask yourself whether or not it is worth investigating the root cause and going back to the beginning to fix it.
+
+As an actuary, this is beaten into my soul. Does the benefit out-weigh the cost to go back and fix the root cause?  Actuaries sometimes call this "aim of the analysis" which means get what you're aiming for and no more (the optimal cost-benefit).  As someone who promotes reproducibility (and a wannabe data scientist)--- it's always to the benefit to find the root cause and remedy it.  As for now, I am going to continue with the data set we managed to this point.  
+
+At the end of each article we provide the final solution for such problems.  Thought process > final product > buy in.
+
+```{r}
+# Identify rows with NAs for each column we just made.
+all_nas <-  # I can do better than this I think. It works though.
+  !with(
+    tbl_trini_,
+    tag_recipe_type %>% is.na *
+    tag_skill_level %>% is.na *
+    tag_course      %>% is.na *
+    tag_cuisine     %>% is.na)
+
+# Number of rows should be the same.
+tbl_trini_[all_nas,] %>% nrow == tbl_trini %>% nrow
+```
+
+This test reduces some risk in the data preparation process. Next we use an inner join to make sure we didn't drop a recipe when applying the `all_nas` filter.
+
+```{r}
+tbl_trini <- 
+  tbl_trini %>% 
+  inner_join(tbl_trini_[all_nas,]) %>% 
+  mutate(
+    tag_tag        = tags %>% map(str_extract, "tag.+") %>% str_split("[ ]") %>% 
+                              map(function(x) x[str_detect(x, "tag-")]), #Filter to 'tag-' only
+    tag_ingredient = tags %>% map(str_extract, "ingredient.+") %>% str_split("[ ]") %>%  
+                              map(function(x) x[str_detect(x, "ingredient-")]) #Filter to 'ingredient-' only
+  ) 
+
+rm(tbl_trini_)
+```
+
+I've left `tag_tag` and `tag_ingredient` as a nested character vector. First, we want to maintain the data grain to the recipe level as we tidy other data; second, the length within each is different so unnesting is not natural; and finally, a product of the former, without a particular problem or model in mind we don't know this information should be represented exactly.  In either case, it is in a tidy format, but more work would need to be done depending on what's next.
+
+That completes the tidying of the `tags`. I bet the tidying gets more challenging from here but we forge on.
+
+`#### Tidy the items
+
+Let's make this short.  The `items` column is next on our list so let's tidy up.  This consists of aligning html attributes to text and making each a new column in `tbl_trini`.
+
+```{r}
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    items_new = 
+      items %>% 
+      map(function(x)
+        data.frame(
+          itemprop = x %>% sapply(html_attr, "itemprop"),
+          value    = x %>% sapply(html_text), 
+          stringsAsFactors = FALSE) %>% 
+        as.tibble)
+    )
+
+# Force the spread function to work.
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    items_new =
+    items_new %>% 
+    seq_along %>% 
+    lapply(function(i) tbl_trini$items_new[[i]] %>% spread(itemprop, value))
+    ) %>% 
+  unnest(items_new)
+```
+
+I'm getting the following error when mapping the items directly into the `spread` function.  Hence, the reason `seq_along` is passed to `lapply` and thereby "forcing" the operation I want.  It is probably better to research the underlying issue; the gains of this research however is actually a loss if we factor in the time--- so we mention it here and move on.
+
+The same technique is used to spread other columns as you we see in subsequent sections.
+
+```{r}
+tryCatch(
+  tbl_trini %>% 
+  mutate(
+    items_new =
+    items_new %>% 
+    map(function(x) x %>% spread(itemprop, value))
+    ) %>%
+  unnest(items_new),
+  error = function(e) e
+)
+```
+
+#### Tidy the times
+
+This section has a nice ring to it; almost like a cooking timer ringing or something to that effect.  We're here to tidy the times so let's examine a sample to get an idea of what we're working with.
+
+```{r}
+tbl_trini$times[1:3]
+```
+
+This sample shows each nodeset has 3 times: prep, cook and total.  Obviously, total is the sum of the other two, but let's keep the total: it's a different format and we can do a quick data integrity check. Time features are always good to work within the `lubridate` package as part of the `tidyverse`. Below we define two helper functions to parse a character into a numeric time period.
+
+```{r}
+# I couldn't find a lubridate function for the format PTDHMS.
+parse_ptdhms <- function(str){
+  # Converts an html datetime format of "PTDHMS" to number of seconds.  
+  # E.g. "PT15H10M" is 15 hours and 10 minutes.  "PT1D3H5M" is 1 day 3 hours and 5 minutes. 
+  stringr::str_extract(str, "\\d+(?=D)") %>% {ifelse(is.na(.), 0, as.numeric(.) * 24 * 60 * 60)} +
+  stringr::str_extract(str, "\\d+(?=H)") %>% {ifelse(is.na(.), 0, as.numeric(.) * 60 * 60)} +
+  stringr::str_extract(str, "\\d+(?=M)") %>% {ifelse(is.na(.), 0, as.numeric(.) * 60)} +
+  stringr::str_extract(str, "\\d+(?=S)") %>% {ifelse(is.na(.), 0, as.numeric(.))}
+}
+
+# The following may be better to use instead of relying on regex, but I was not successful with working out the bugs.  Didn't try long.
+# Idea based on: https://stackoverflow.com/questions/55092962/c-sharp-convert-html-time-to-hours-and-minutes 
+# May be worth sending a note to the lubridate developers - lubridate relies on Rcpp.
+    # library(Rcpp)
+    ## This will probably ask you to install R tools if you never have
+    ## Evaluating a C++ expression in R
+    # Rcpp::evalCpp('System.Xml.XmlConvert.ToTimeSpan("PT15H10M")')
+    ## An R function written with C++
+    # Rcpp::cppFunction(
+    # 'List timespan(NumericVector tm){
+    #   double tmspan = System.Xml.XmlConvert.ToTimeSpan(tm);
+    #   return tmspan;
+    # }')
+
+parse_hour_min <- function(str){
+  stringr::str_extract(str, "\\d+(?= hours?)") %>% {ifelse(is.na(.), 0, as.numeric(.) * 60 * 60)} +
+  stringr::str_extract(str, "\\d+(?= mins?)")  %>% {ifelse(is.na(.), 0, as.numeric(.) * 60)} 
+}
+```
+
+One quick note: using "s?" returns zero or one match of "s" after "hour" and "min"; e.g., we match "hour" and its plural "hours" when using "s?" in this case.  
+
+With the help of the above functions we tidy the times and perform a check between the two times we put together.
+
+```{r}
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    times_new = 
+      times %>% 
+      map(function(x)
+        data.frame(
+          itemprop = x %>% sapply(html_attr, "itemprop"),
+          datetime = x %>% sapply(html_attr, "datetime") %>% parse_ptdhms,
+          duration = x %>% sapply(html_text)             %>% parse_hour_min,
+          stringsAsFactors = FALSE
+          ) %>% 
+        as.tibble %>% 
+        mutate(difference = datetime - duration)
+        )
+    )
+# Quick data integrity check - we should see 0s for difference everywhere.
+(tbl_trini$times_new %>% bind_rows()) %>% summary
+```
+
+The times match perfectly (at the time of this print anyway)!  That means we can drop one column. Although the function `parse_hour_min` is shorter is it not as robust as `parse_ptdhms`.  The latter relies on an html attribute of datetime which is more standardized than `html_text` output.
+  
+Some of recipes are missing the times.  When unnesting the column `times_new` we drop rows with no data.  This is the reason we left join back onto `tbl_trini`.  In addition, we add a little `ifelse` hack to ensure we can use `spread` and then `unnest`.  Otherwise, "itemprop" does may not exist and an error is thrown.
+
+```{r}
+# Add the dataframe like we did before but without the extra column.
+tbl_trini <-
+  tbl_trini %>% 
+  left_join(
+    tbl_trini %>% 
+    mutate(
+      times_new = 
+        times %>% 
+        map(function(x)
+          data.frame(
+            itemprop = x %>% sapply(html_attr, "itemprop") %>% ifelse(is.na(.), "totalTime", .),
+            datetime = x %>% sapply(html_attr, "datetime") %>% parse_ptdhms,
+            stringsAsFactors = FALSE
+            ) %>% 
+          as.tibble 
+          ) %>% 
+        map(function(x) x %>% spread(itemprop, datetime))
+      ) %>% 
+      unnest(times_new) %>% 
+      rename(cooktime_sec  = cookTime,
+             preptime_sec  = prepTime,
+             totaltime_sec = totalTime)
+  )
+```
+
+That concludes tidying the times.
+
+#### Tidy the notes 
+
+We're not going to spend much time here.  This section demonstrates how we can use a regular expression to extract text from xml code. Normally, one might use `html_text`, but we want to preserve more.  The motivation will be clear in a moment.
+
+Upon inspection the only useful data is in the "ERSNotes" CSS selector.  Can you spot the difference between these two methods?
+
+```{r}
+tbl_trini$notes[1:5] %>% map(html_nodes, "[class='ERSNotes']") %>% map(html_text)
+tbl_trini$notes[1:5] %>% map(str_extract, "(?<=<div class=\"ERSNotes\">).+(?=</div>)")
+```
+
+`str_extract` does not remove html tags such as `<br>`.  As before, we used a go between regular expression to get extract all characters between `<div class=\"ERSNotes\">` and `</div>`.  
+
+The reason I want the html tags is to recycle them.  Later we do some visualizations--- the notes can be used a *hover* in `plotly`.  You can find that here.  This concludes tidying the notes.
+
+```{r}
+tbl_trini <- 
+  tbl_trini %>% 
+  mutate(
+  notes_new = notes %>% sapply(str_extract, "(?<=<div class=\"ERSNotes\">).+(?=</div>)"),
+  notes_ind = !(notes %>% is.na)
+  )
+```
+
+#### Tidy the instructions
+
+The instructions are a numerical list of steps.  First, we replace the `xml_nodeset` with a character vector by using `html_text`.  We're are going to leave it nested for the same reason the `tags` and `items` are left nested. 
+
+```{r}
+tbl_trini$instructions[[1]] %>% html_text
+```
+
+Now `purrr` it through all recipes and that conludes tidying the intructions.
+
+```{r}
+tbl_trini$instructions <- tbl_trini$instructions %>% map(html_text)
+```
+
+#### Tidy the ingredients {#tidy_ingredients}
+
+This is going to be fun.  We need a way to organize the ingredients and the quantity of said ingredients.  As more of a guess than an assumption, I am going to assume an ingredient consists of 3 things in this order: (1) a numeric quantity, (2) a unit, and (3) the name of the ingredient, in that order. 
+
+Take a look at the following sample.  This time I chose recipes we haven't looked at before.
+
+```{r}
+tbl_trini$ingredients[5:10] %>% map(html_text)
+```
+
+A quick inspection of the output tells us the assumption is not bad, but it needs work.  Particularly, I noticed the following particulars with this dataset:
+
+1. The amounts are represented in various different ways---
+    a. Fractions are represented by one character.  For example, instead of "1/2" we have "½" so we can't just use `\\d` or `[:digits:]` to extract amounts.
+    b. Similar issue to 1. some amounts are ranges while others have no amount at all, e.g. "oil for frying", or is represented in grams, e.g. "400g".
+    c. Amounts are not always a numeric quantity; e.g. "salt to taste" or "a dash of salt".
+3. There is a forth feature, but it is not as common: verbs such as "choppped", "juliened", "sliced", may be useful to extract.
+4. Notes exist for some of the ingredients such as "optional" or "frozen works just as well". 
+
+With my current set of skills I think it is best to develop a series of regular expressions and extract specific items ono-by-one.  What is left over from the extraction will be further used to extract.  It's easier to read the process then to describe the process. 
+Before we begin convert the nodeset to a character vector.
+
+```{r}
+tbl_trini$ingredients <- tbl_trini$ingredients %>% map(html_text)
+tbl_trini_copy <- tbl_trini
+```
+
+##### Extract Units of Measurement
+
+First, we going to go after common units of measure.  Formulizing `str_get` was done by trial and error iteration. I started with the most common units and their plural counterparts, then continued to add more after viewing the result.  
+
+```{r}
+str_get <- 
+  c("tsps?",
+    "tbsps?",
+    " c |cups?",
+    "ozs?|ounces?",
+    "lbs?|pounds?",
+    "(?<=\\d)g|(?<=\\d) g |(?<=\\d) g\\.",
+    "dash",
+    "to taste",
+    "pinch|pinch of",
+    "bundles?",
+    "pints?|glass[es]?|liters?|litres?",
+    "big|small|med(ium)?|large",
+    "head|head of",
+    "cloves?",
+    "leaf|leaves",
+    "tin|can") %>% 
+  paste0(collapse = "|")
+
+# Visualize the results to make sure it worked.
+data.frame(
+  metric = 
+    tbl_trini_copy$ingredients %>% 
+    map(str_extract, str_get) %>% 
+    unlist %>% 
+    str_to_lower %>% 
+    str_trim
+) %>% 
+group_by(metric) %>% 
+summarise(count = n()) %>% 
+ggplot() + 
+geom_col(aes(x = metric, y = count)) +
+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Let's add the unit of measure column to `tbl_trini` and remove the corresponding strings from the `ingredients`.
+
+```{r}
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    ingredients_unit_measure =
+      ingredients %>% 
+      map(str_extract, str_get)%>% 
+      map(str_to_lower) %>% 
+      map(str_trim),
+    ingredients_temp = # Original preserved just in case
+      ingredients %>% 
+      map(str_remove, str_get)
+  )
+```
+
+##### Extract Cooking Verbs
+
+In this section we create a regex with a list of cooking verbs from a internet source, extract the expression, and visualize the result.  We are not going to remove the verbs from `ingredients_temp` because some verbs, textually, are the same as the ingredients itself; e.g. fillet is a verb and a noun.  Removing the ingredient seems like a bad idea if we're trying to make a dataset of recipes.  :)
+
+```{r}
+cooking_verbs <-
+  "https://www.enchantedlearning.com/wordlist/cooking.shtml" %>% 
+  read_html %>% 
+  html_nodes("[class='wordlist-item']") %>% 
+  html_text %>% 
+  str_to_lower %>% 
+  paste0("(?=[|d|ed]?)") %>% 
+  paste0(collapse = "|")
+
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    ingredients_verb =
+      ingredients_temp %>% 
+      map(str_extract, cooking_verbs)%>% 
+      map(str_to_lower) %>% 
+      map(str_trim)
+  )
+
+tbl_verbs <-
+  data.frame(
+    verb = tbl_trini$ingredients_verb %>% unlist
+    ) %>% 
+  group_by(verb) %>% 
+  summarise(count = n())
+  
+wordcloud::wordcloud(
+  words        = tbl_verbs$verb, 
+  freq         = tbl_verbs$count, 
+  min.freq     = 1,
+  random.order = FALSE, 
+  rot.per      = 0, #No words rotated.
+  colors       = RColorBrewer::brewer.pal(10, "Paired")
+)  
+```
+
+##### Extract Ingredient Notes
+
+A fair number of ingedients contain additional information between parantheses. Let's extract these as `ingredients_note` and update our `ingredients_temp` by removing the extracted string.
+
+```{r}
+str_get <- "(?<=\\().+(?=\\))"
+
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    ingredients_note =
+      ingredients_temp %>% 
+      map(str_extract, str_get) %>% 
+      map(str_to_lower) %>% 
+      map(str_trim),
+    ingredients_temp =
+      ingredients_temp %>% 
+      map(str_remove, str_get)
+  )
+```
+
+##### Extract Ingredient Amounts
+
+Let's extract the amounts as described--- assuming it appears before the first space--- then visualize how often this occurs.
+
+```{r wordcloud_first_word}
+tbl_text <-
+  data.frame(
+    first_word = 
+      tbl_trini$ingredients_temp %>% 
+      map(str_extract, "[:graph:]+(?=[:blank:])") %>% 
+      unlist,
+    stringsAsFactors = FALSE
+  ) %>% 
+  group_by(first_word) %>% 
+  summarise(count = n())
+
+wordcloud::wordcloud(
+  words        = tbl_text$first_word, 
+  freq         = tbl_text$count, 
+  min.freq     = 1,
+  random.order = FALSE, 
+  rot.per      = 0, #No words rotated.
+  colors       = RColorBrewer::brewer.pal(10, "Paired")
+)
+```
+
+This gives us a pretty good picture 
+
+```{r wordcloud_first_word_to_lower}
+tbl_text <-
+  data.frame(
+    first_word = 
+      tbl_trini$ingredients_temp %>% 
+      map(str_extract, "[:graph:]+(?=[:blank:])") %>% 
+      unlist %>% 
+      str_to_lower, # The only thing added.
+    stringsAsFactors = FALSE) %>% 
+  group_by(first_word) %>% 
+  summarise(count = n())
+
+wordcloud::wordcloud(
+  words        = tbl_text$first_word, 
+  freq         = tbl_text$count, 
+  min.freq     = 1,
+  random.order = FALSE, 
+  rot.per      = 0, #No words rotated.
+  colors       = RColorBrewer::brewer.pal(10, "Paired")
+)
+```
+
+This gives me a creative idea to hone in on the fractions and numeric values.  The output of `str_to_upper` and `str_to_lower` should not equate for words, so let's extract the records when this occurs and take a look the resulting cloud. 
+
+```{r}
+# Find when upper and lower strings equate
+index_target_1 <- 
+  tbl_text %>% 
+  {str_to_lower(.$first_word) == str_to_upper(.$first_word)} %>% 
+  if_else(is.na(.), FALSE, .)
+
+wordcloud::wordcloud(
+  words        = tbl_text$first_word[index_target_1], 
+  freq         = tbl_text$count[index_target_1], 
+  min.freq     = 2,
+  random.order = FALSE, 
+  rot.per      = 0, #No words rotated.
+  colors       = RColorBrewer::brewer.pal(8, "Paired")
+)
+```
+
+We can also try to go directly after the unicode characters directly.  The following website was helpful in determining the codes.
+
+https://graphemica.com/unicode/characters/page/1
+https://graphemica.com/unicode/characters/page/35
+
+
+```{r}
+unicode_fractions <- 
+  c("00BC", "00BD", "00BE", 
+    #Vulgar fractions
+    paste0("215", 0:9),  
+    paste0("215", LETTERS[1:6])) %>% # A to F
+  paste0("\\u", ., collapse = "|") # Add unicode prescipt (C, C++, and Java)
+
+# Find unicode_fractions only
+index_target_2 <- 
+  tbl_text$first_word %>% 
+  str_detect(unicode_fractions)%>% 
+  if_else(is.na(.), FALSE, .)
+
+wordcloud::wordcloud(
+  words        = tbl_text$first_word[index_target_2], 
+  freq         = tbl_text$count[index_target_2], 
+  min.freq     = 2,
+  random.order = FALSE, 
+  rot.per      = 0, #No words rotated.
+  colors       = RColorBrewer::brewer.pal(8, "Paired")
+)
+
+# Find unicode_fractions and digits
+index_target_2 <- 
+  tbl_text$first_word %>% 
+  str_detect(unicode_fractions %>% paste0(., "|[:digit:]+")) %>%  # Add integers)
+  if_else(is.na(.), FALSE, .)
+
+wordcloud::wordcloud(
+  words        = tbl_text$first_word[index_target_2], 
+  freq         = tbl_text$count[index_target_2], 
+  min.freq     = 2,
+  random.order = FALSE, 
+  rot.per      = 0, #No words rotated.
+  colors       = RColorBrewer::brewer.pal(8, "Paired")
+)
+```
+
+Let's compare the two methods visually and see if there is any improvement we can make.
+
+```{r}
+data.frame(
+  x = if_else(index_target_1, tbl_text$first_word, "NA"),
+  y = if_else(index_target_2, tbl_text$first_word, "NA"),
+  stringsAsFactors = FALSE) %>% 
+  subset(x != y) %>% 
+  ggplot + geom_tile(aes(x = x, y = y))
+```
+
+The second method is more robust (on the y-axis) is more robust.  Don't forget this is only the first word--- the first text before a space.  It is clear from the tile graph above that we just need to extract the `unicode_fractions` along with any digits from the ingredients.
+
+```{r}
+# Find unicode_fractions and digits
+str_get <- unicode_fractions %>% paste0(., "|[:digit:]+")
+
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    ingredients_amount =
+      ingredients_temp %>% 
+      map(str_extract, str_get) %>% 
+      map(str_to_lower) %>% 
+      map(str_trim),
+    ingredients_temp =
+      ingredients_temp %>% 
+      map(str_remove, str_get)
+  )
+
+tbl_text <-
+  data.frame(
+    amount = 
+      tbl_trini$ingredients_amount %>% 
+      unlist,
+    stringsAsFactors = FALSE) %>% 
+  group_by(amount) %>% 
+  summarise(count = n())
+
+wordcloud::wordcloud(
+  words        = tbl_text$amount, 
+  freq         = tbl_text$count, 
+  min.freq     = 1,
+  random.order = FALSE, 
+  rot.per      = 0, #No words rotated.
+  colors       = RColorBrewer::brewer.pal(8, "Paired")
+)
+```
+
+##### The Final Ingredient
+
+If you have not been following along carefully, we've been weeding out particular strings in attempts to end up with the ingredient. For example, if the ingredient was "1 cup all-purpose flour" we want to extract "all-purpose flour".  If the amount and unit of measure is removed from the string all that is be left is "all-purpose flour". 
+
+Theoretically we did this, but what's left-over is still unorganized.  Let's takea look but first clean it up by lowering, removing punctuation, and trimming the string.
+
+```{r}
+tbl_text <-
+  data.frame(
+    leftover = 
+      tbl_trini$ingredients_temp %>% 
+      unlist %>% 
+      str_to_lower %>% 
+      str_remove_all("[^[:alnum:][:space:]-]") %>% 
+      str_remove(" - [:graph:]") %>% # This happens to often to ignore
+      str_trim,
+    stringsAsFactors = FALSE) %>% 
+  group_by(leftover) %>% 
+  summarise(count = n())
+
+wordcloud::wordcloud(
+  words        = tbl_text$leftover, 
+  freq         = tbl_text$count, 
+  min.freq     = 1,
+  random.order = FALSE, 
+  rot.per      = 0.25,
+  colors       = RColorBrewer::brewer.pal(12, "Paired")
+)
+```
+
+What is leftover looks pretty good!  There is probably more cleanup we can do, but it gets into some nitty-gritty we can always do later.  
+
+To include all the data we're going to create one last column--- the resulting string from removing all ingredient extractions we just did above.  We've been transforming `ingredients_temp` by removing strings along the way. We end this section by creating `ingredients_leftover` (yes, pun intended), the string leftover after extracting other features from `ingredients`.  That's compared to `ingredients_temp` for good measure.
+
+```{r}
+tbl_trini <-
+  tbl_trini %>% 
+  mutate(
+    ingredients_leftover =
+      ingredients_temp %>% 
+      map(str_remove, str_get) %>% 
+      map(str_remove_all, "[^[:alnum:][:space:]-]") %>%  
+      map(str_to_lower) %>% 
+      map(str_trim)
+    )
+```
+
 ### What's Next?
 
-Now it's time to share this example with Carly and further refine it with her feedback.  
+Now that we have a cool little dataset we can do create more visualizations, maybe some representation learning to start categorizing, or simply use the data set to query recipes in different ways.
 
-After that, we can do some visualizations, maybe some representation learning to start categorizing, or simply use the data set to query recipes in different ways.
+A future post will use this data to create a dashboard.
+
+http://jkunst.com/flexdashboard-highcharter-examples/pokemon/
 
 
+### Final Code and Conclusions
 
+This section we provide the minimal code to produce the dataset and save it for others to use.
+
+#### Webscrape
+
+R code parallelized to get html.
+
+#### Tidy
+
+R code to tidy all at once.
+
+#### Final Product
+
+Add attributes which describe the data columns.  Meta-data.  Write it down to the server.
 
 
