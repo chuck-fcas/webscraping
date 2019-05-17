@@ -16,11 +16,11 @@ path_save3 <- "tbl_players_3.Rda"
 path_save4 <- "tbl_players_4.Rda"
 ```
 
-Sitting at a bar enjoying a Dogfish 60 Minute and a good friend of mine asked me about scraping data from a website.  James wants NBA player data so he can better predict which players will do better in his fantasy league.  Good luck with that!  I can help with the scraping, not fantasy basketball.
+Sitting at a bar enjoying a Dogfish 60 Minute and a friend of mine asks me about scraping data from a website.  James wants NBA player data so he can better predict which players will do better in his fantasy league.  Good luck with that!  I can help with the scraping, but not fantasy basketball.
 
 ### Scraping the List of Players
 
-The first thing we need to do is determine the list of players and the respective urls.  We are after each players' page where his stats reside (yes, boys only- this is the NBA).
+The first thing we need to do is determine the list of players and their respective urls.  We are after each players' page where his stats reside.
 
 ```{r alphabetical_players}
 urlref <- 
@@ -57,12 +57,11 @@ tbl_players <-
   mutate(tbody = url_letter %>% map(function(x) read_html(x) %>% html_nodes("tbody tr")))
 ```
 
-Grab all the 'data-stats' out of the table of players including the url for each player page.  We could use `html_table` as well (I will later), but I wanted to demonstrate a manual approach.
+Grab all the 'data-stats' out of the table of players including the url for each player page.  We could use `html_table` as well (I will later in this post), but I wanted to demonstrate a manual approach.
 
 ```{r player_tibble}
 # Function to help reduce code below.
-node_text <- 
-  function(x, css){html_nodes(x, css) %>% html_text}
+node_text <- function(x, css){html_nodes(x, css) %>% html_text}
 
 tbl_players <-
   tbl_players %>% 
@@ -112,7 +111,7 @@ try_not_par <-
 Sys.time() - x
 ```
 
-About 40 seconds per 100 players is as fast as I could get.  Let's try to get that faster though shall we? [Max Gordon](https://www.r-bloggers.com/author/max-gordon/) has some great stuff, in particular [this blog post from 2015](https://www.r-bloggers.com/how-to-go-parallel-in-r-basics-tips/).  I opted to use the `parallel` package.
+About 40 seconds per 100 players is as fast as I could get.  Let's try to get that faster though shall we? [Max Gordon](https://www.r-bloggers.com/author/max-gordon/) has some great stuff, in particular [this blog post from 2015](https://www.r-bloggers.com/how-to-go-parallel-in-r-basics-tips/).  I opted to try the `parallel` package first.
 
 ```{r cluster, echo=FALSE}
 library(parallel)
@@ -224,7 +223,6 @@ player_no_tables <-
   tbl_players$html[[1]] %>% 
   get_player_tables %>% 
   length
-
 ```
 
 The first player in the list has `r player_no_tables` tables on his page.  Code for every player is as follows.
@@ -236,7 +234,7 @@ tbl_players <-
 tbl_players %>% save(file = path_save2)
 ```
 
-#### Naming Each Table with its html Header
+#### Naming Each Table with its HTML Header
 
 Let's provide a solution for the table names.  Let's assume all players have the same number of tables.  We get the following list of headers for our first player, `r tbl_players$player[1]`.
 
@@ -294,7 +292,7 @@ html_nodes(xpath = xpath) %>%
 html_attr("id")
 ```
 
-Now we can call each table explicitly with the id. Mucho mas facil. Using the same pipe approach.  I'm sure there is a way to continue to use `css` instead `xpath`- I just don't know how. Below we simply collapse the xpath selectors with pipes and 
+Now we can call each table explicitly with the id. Mucho mas facil. Using the same pipe approach.  I'm sure there is a way to continue to use `css` instead `xpath`- I just don't know how at this point. Below we simply collapse the xpath selectors with pipes and 
 
 ```{r player_table_ids, eval = FALSE}
 tbl_players <- 
@@ -529,8 +527,9 @@ Need to fix the headers.
 
 Model ready tidy data.
 
-## Visualise
+## Visualize
 
+Try using highcharter.  
 
 ```{r visualize1}
 
@@ -549,7 +548,7 @@ tbl_players %>%
 
 ## Using tensorflow to Predict Basketball
 
-Add some simple examples of predicting player success with some outcome y or multiple outcomes $y_i$.
+Add some simple examples of predicting player success with some outcome y or multiple outcomes $y_i$ in another post.
 
 
 
