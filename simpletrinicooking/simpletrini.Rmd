@@ -295,11 +295,7 @@ tbl_trini %>%
   geom_bar() + xlab("Number of Multi-tags")
 ```
 
-This is one of those times where you ask yourself whether or not it is worth investigating the root cause and going back to the beginning to fix it.
-
-As an actuary, this is beaten into my soul. Does the benefit out-weigh the cost to go back and fix the root cause?  Actuaries sometimes call this "aim of the analysis" which means get what you're aiming for and no more (the optimal cost-benefit).  As someone who promotes reproducibility (and a wannabe data scientist)--- it's always to the benefit to find the root cause and remedy it.  As for now, I am going to continue with the data set we managed to this point.  
-
-At the end of each article we provide the final solution for such problems.  Thought process > final product > buy in.
+This is one of those times where you ask yourself whether or not it is worth investigating the root cause and going back to the beginning to fix it.  In this post, the final solution remedies this problem by simply using the function `html_node` rather than `html_nodes`.  To illustrate a potential workaround because we used `html_nodes` here we offer the following solution.
 
 ```{r}
 # Identify rows with NAs for each column we just made.
@@ -312,10 +308,11 @@ all_nas <-  # I can do better than this I think. It works though.
     tag_cuisine     %>% is.na)
 
 # Number of rows should be the same.
+# Good test to reduce risk in the data preparatipon process.
 tbl_trini_[all_nas,] %>% nrow == tbl_trini %>% nrow
 ```
 
-This test reduces some risk in the data preparation process. Next we use an inner join to make sure we didn't drop a recipe when applying the `all_nas` filter.
+Next we use an inner join to make sure we didn't drop a recipe when applying the `all_nas` filter.
 
 ```{r}
 tbl_trini <- 
@@ -331,11 +328,11 @@ tbl_trini <-
 rm(tbl_trini_)
 ```
 
-I've left `tag_tag` and `tag_ingredient` as a nested character vector. First, we want to maintain the data grain to the recipe level as we tidy other data; second, the length within each is different so unnesting is not natural; and finally, a product of the former, without a particular problem or model in mind we don't know this information should be represented exactly.  In either case, it is in a tidy format, but more work would need to be done depending on what's next.
+I've left `tag_tag` and `tag_ingredient` as a nested character vector. First, we want to maintain the data grain at the recipe level as we tidy other data; second, the length within each is different so unnesting is not natural; and finally, a product of the former, without a particular problem or model in mind we don't know this information should be represented exactly.  In either case, it is in a tidy format, but more work would need to be done depending on what's next.
 
 That completes the tidying of the `tags`. I bet the tidying gets more challenging from here but we forge on.
 
-`#### Tidy the items
+#### Tidy the items
 
 Let's make this short.  The `items` column is next on our list so let's tidy up.  This consists of aligning html attributes to text and making each a new column in `tbl_trini`.
 
@@ -738,7 +735,6 @@ We can also try to go directly after the unicode characters directly.  The follo
 https://graphemica.com/unicode/characters/page/1
 https://graphemica.com/unicode/characters/page/35
 
-
 ```{r}
 unicode_fractions <- 
   c("00BC", "00BD", "00BE", 
@@ -874,29 +870,12 @@ tbl_trini <-
     )
 ```
 
-### What's Next?
-
-Now that we have a cool little dataset we can do create more visualizations, maybe some representation learning to start categorizing, or simply use the data set to query recipes in different ways.
-
-A future post will use this data to create a dashboard.
-
-http://jkunst.com/flexdashboard-highcharter-examples/pokemon/
-
 
 ### Final Code and Conclusions
 
-This section we provide the minimal code to produce the dataset and save it for others to use.
+The final dataset and the consolidated R code can be found in the Datasets & Dashboards section of this blog or find the link to the related article below.
 
-#### Webscrape
+Below is the consolidated code.
 
-R code parallelized to get html.
-
-#### Tidy
-
-R code to tidy all at once.
-
-#### Final Product
-
-Add attributes which describe the data columns.  Meta-data.  Write it down to the server.
-
-
+```{r, eval = FALSE, code = readLines('simpletrini.R')}
+```
