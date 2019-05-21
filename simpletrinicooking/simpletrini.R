@@ -49,8 +49,7 @@ tbl_trini <-
   tbl_trini %>% 
   mutate(recipe_html = recipe_url %>% map(read_html))
 
-# Annoying to lose the work wo we save.
-tbl_trini_copy <- tbl_trini
+# Annoying to lose the work so we save.
 tbl_trini %>% save(file = "tbl_trini_recipehtml.Rda")
 load("tbl_trini_recipehtml.Rda")
 
@@ -103,7 +102,7 @@ tbl_trini <-
     items_temp =
       items_temp %>% 
       seq_along %>% 
-      lapply(function(i) tbl_trini$items[[i]] %>% spread(itemprop, value))
+      lapply(function(i) tbl_trini$items_temp[[i]] %>% spread(itemprop, value))
   ) %>% 
   unnest(items_temp)
 
@@ -208,7 +207,18 @@ names(tbl_trini) <-
   names %>% 
   gsub("([a-z])([A-Z])", "\\1_\\L\\2", ., perl = TRUE)
 
-tbl_trini %>% save(file = "tbl_trini.Rda")
+# Remove nodeset objects.
+tbl_trini <-
+  tbl_trini %>% 
+  select(
+    -recipe_html,
+    -times,
+    -items,
+    -ingredients,
+    -instructions
+    )
+
+tbl_trini %>% write_rds("tbl_trini.Rds")
 
 ## Garbage code. ----
 ## This was having problems but leaving here
